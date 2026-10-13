@@ -1,0 +1,17 @@
+import { WeeklyPanel } from "@/components/WeeklyPanel";
+import { hasAnyProvider } from "@/lib/ai/client";
+import { listReviews, listWeekly } from "@/lib/db";
+import { recentWeekStarts, weekEndOf } from "@/lib/week";
+
+export const dynamic = "force-dynamic";
+
+export default async function WeeklyPage() {
+  // 최근 10주 + 이미 선정해둔 주(오래된 것 포함)를 합쳐 최신순으로
+  const saved = await listWeekly(50);
+  const weeks = Array.from(new Set([...recentWeekStarts(10), ...saved.map((w) => w.week_start)])).sort((a, b) => (a < b ? 1 : -1));
+  // 주 초반이라 이번 주 리뷰가 아직 없으면 지난주를 먼저 보여줌 (빈 화면으로 시작하지 않도록)
+  const thisWeek = weeks[0];
+  const thisWeekCount = (await listReviews({ from: thisWeek, to: weekEndOf(thisWeek), limit: 1 })).total;
+  const initialWeek = thisWeekCount === 0 && weeks[1] ? weeks[1] : thisWeek;
+  return <WeeklyPanel weeks={weeks} aiReady={hasAnyProvider()} initialWeek={initialWeek} />;
+}
