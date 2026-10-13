@@ -73,3 +73,24 @@ describe("데모 사이트", () => {
     expect(DEMO_TRENDS).toHaveLength(5);
   });
 });
+
+describe("데모 묶음 번호", () => {
+  it("번호에 리뷰 번호를 담고 다시 꺼낼 수 있다", async () => {
+    const { encodeDemoBundleId, decodeDemoBundleId } = await import("@/lib/demo/bundle-id");
+    expect(decodeDemoBundleId(encodeDemoBundleId([24, 2, 1]))).toEqual([24, 2, 1]);
+    expect(decodeDemoBundleId(encodeDemoBundleId([1, 2]))).toEqual([1, 2]);
+    expect(decodeDemoBundleId(1)).toBeNull(); // 미리 만든 묶음 번호는 해당 없음
+    expect(decodeDemoBundleId(2)).toBeNull();
+  });
+  it("다른 서버 함수에 없는 묶음도 번호만으로 다시 만들고, 콘텐츠도 바로 채운다", async () => {
+    const { encodeDemoBundleId } = await import("@/lib/demo/bundle-id");
+    const items = (await db.listReviews({ limit: 100 })).items.filter((r) => r.review_text.trim() && r.photo_urls.length).slice(0, 3);
+    const id = encodeDemoBundleId(items.map((r) => r.id));
+    expect((await db.getBundle(id))?.review_ids).toEqual(items.map((r) => r.id)); // 없던 번호도 만들어 줌
+    const rows = await db.listBundleContents(id);
+    expect(rows.map((r) => r.kind).sort()).toEqual(["carousel", "news", "reels"]);
+    expect((await db.listBundleContents(id)).length).toBe(3); // 두 번 불러도 늘어나지 않음
+    const created = await db.createBundle({ title: "t", review_ids: items.map((r) => r.id), source: "manual" });
+    expect(created.id).toBe(id);
+  });
+});

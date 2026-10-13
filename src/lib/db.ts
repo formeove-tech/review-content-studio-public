@@ -2,6 +2,8 @@ import { createClient, type Client, type InStatement, type InValue, type Row } f
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { decodeDemoBundleId, encodeDemoBundleId } from "./demo/bundle-id";
+import { demoBundleFor } from "./demo/generate";
 import { isDemoSite } from "./runtime";
 import { COLUMN_MIGRATIONS, SCHEMA_SQL } from "./schema.mjs";
 import {
@@ -354,6 +356,21 @@ export async function listContents(reviewId: number): Promise<ContentRow[]> {
 
 export async function listBundleContents(bundleId: number): Promise<ContentRow[]> {
   const rs = await q("SELECT * FROM contents WHERE bundle_id = ? ORDER BY id DESC", [bundleId]);
+  if (rs.rows.length === 0 && isDemoSite()) {
+    // 데모: 이 서버 함수에 콘텐츠가 없으면 미리 정한 틀로 바로 만들어 둠 (같은 리뷰면 항상 같은 결과)
+    const b = await getBundle(bundleId);
+    if (b) {
+      const reviews = (await getReviewsByIds(b.review_ids)).filter((r) => r.review_text.trim());
+      if (reviews.length >= 2) {
+        const data = demoBundleFor(reviews, (await getSettings()).storeName);
+        return saveContents({ bundleId }, [
+          { kind: "carousel", payload: data.carousel, key_quote: data.key_quote, model: "demo-template" },
+          { kind: "reels", payload: data.reels, key_quote: data.key_quote, model: "demo-template" },
+          { kind: "news", payload: data.news, key_quote: data.key_quote, model: "demo-template" },
+        ]);
+      }
+    }
+  }
   return rs.rows.map((r) => rowToContent(rec(r)));
 }
 
@@ -377,6 +394,12 @@ const SELECT_BUNDLE = `SELECT b.*, (SELECT COUNT(*) FROM contents c WHERE c.bund
 
 export async function createBundle(input: { title: string; review_ids: number[]; source: BundleSource; theme?: string }): Promise<Bundle> {
   const ids = Array.from(new Set(input.review_ids.map(Number).filter((n) => Number.isFinite(n) && n > 0)));
+  if (isDemoSite()) {
+    // 데모: 번호 안에 리뷰 번호를 담아, 다른 서버 함수에서도 같은 묶음을 다시 만들 수 있게 함
+    const demoId = encodeDemoBundleId(ids);
+    await q("INSERT OR REPLACE INTO bundles (id, title, review_ids, source, theme, created_at) VALUES (?, ?, ?, ?, ?, ?)", [demoId, input.title, JSON.stringify(ids), input.source, input.theme || "", new Date().toISOString()]);
+    return (await getBundle(demoId))!;
+  }
   const rs = await q("INSERT INTO bundles (title, review_ids, source, theme, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id", [
     input.title, JSON.stringify(ids), input.source, input.theme || "", new Date().toISOString(),
   ]);
@@ -386,7 +409,17 @@ export async function createBundle(input: { title: string; review_ids: number[];
 
 export async function getBundle(id: number): Promise<Bundle | null> {
   const rs = await q(`${SELECT_BUNDLE} WHERE b.id = ?`, [id]);
-  return rs.rows[0] ? rowToBundle(rec(rs.rows[0])) : null;
+  if (rs.rows[0]) return rowToBundle(rec(rs.rows[0]));
+  if (isDemoSite()) {
+    // 데모: 이 서버 함수에는 없지만 번호가 데모 번호이면 번호에서 리뷰 번호를 꺼내 다시 만듦
+    const ids = decodeDemoBundleId(id);
+    if (ids && ids.length >= 2) {
+      await q("INSERT OR IGNORE INTO bundles (id, title, review_ids, source, theme, created_at) VALUES (?, ?, ?, ?, ?, ?)", [id, `선택한 리뷰 ${ids.length}개 모음`, JSON.stringify(ids), "manual", "", new Date().toISOString()]);
+      const again = await q(`${SELECT_BUNDLE} WHERE b.id = ?`, [id]);
+      return again.rows[0] ? rowToBundle(rec(again.rows[0])) : null;
+    }
+  }
+  return null;
 }
 
 export async function listBundles(limit = 50): Promise<Bundle[]> {
